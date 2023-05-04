@@ -58,6 +58,7 @@ pub struct NixpkgsStrategy<'a> {
     stdenv_diff: Option<Stdenvs>,
     outpath_diff: Option<OutPathDiff>,
     changed_paths: Option<Vec<String>>,
+    /// Touched package in `pkgs/`
     touched_packages: Option<Vec<String>>,
 }
 
@@ -619,6 +620,12 @@ fn request_reviews(maint: &maintainers::ImpactedMaintainers, pull: &hubcaps::pul
 }
 
 fn parse_commit_messages(messages: &[String]) -> Vec<String> {
+    // Convert f{o,a,b,c}d into fod, fad, fbd, fcd
+    let glob_pattern = r"\{([^{}]*)\}";
+    let glob_regex = Regex::new(glob_pattern).unwrap();
+    let split_packages_pattern = r"[^,{}]*\{[^{}]*\}[^,{}]*";
+    let split_packages_regex = Regex::new(split_packages_pattern).unwrap();
+
     messages
         .iter()
         .filter_map(|line| {
@@ -631,8 +638,35 @@ fn parse_commit_messages(messages: &[String]) -> Vec<String> {
             }
         })
         .flat_map(|line| {
-            let pkgs: Vec<&str> = line.split(',').collect();
-            pkgs
+            split_packages_regex
+                .find_iter(line)
+                .map(|m| m.as_str())
+                .collect::<Vec<&str>>()
+        })
+        .flat_map(|pkg| {
+            println!("pkg: {:?}", pkg);
+
+            let matches = glob_regex
+                .captures_iter(pkg)
+                .map(|caps| {
+                    caps[1].split(',').map(|s| s.to_string()).collect::<Vec<String>>()
+                })
+                .fold(vec![String::new()], |acc, cur| {
+                    let mut new_acc = vec![];
+                    for x in acc.iter() {
+                        for y in cur.iter() {
+                            new_acc.push(x.clone() + y);
+                        }
+                    }
+                    new_acc
+            });
+
+            println!("{:?}", matches);
+
+            matches
+                .into_iter()
+                .map(|s| pkg.replace(&glob_pattern, &s))
+                .collect::<Vec<String>>()
         })
         .map(|line| line.trim().to_owned())
         .collect()
@@ -646,8 +680,8 @@ mod tests {
     #[test]
     fn test_parse_commit_messages() {
         let expect: Vec<&str> = vec![
-            "firefox{-esr", // don't support such fancy syntax
-            "}",            // Don't support such fancy syntax
+            "firefox-esr",
+            "firefox",
             "firefox",
             "buildkite-agent",
             "python.pkgs.ptyprocess",
